@@ -6,6 +6,24 @@
   var SNAP_MIN_SCREEN_PX = 60;    // always at least this many *screen* pixels, whatever the zoom
   var TAP_MOVE_THRESHOLD = 8;
 
+  // ---------------- On-screen debug log (?debug=1) ----------------
+  var DEBUG = /[?&]debug=1/.test(location.search);
+  var dbgBox = null;
+  function dbg(msg) {
+    if (!DEBUG) return;
+    if (!dbgBox) {
+      dbgBox = document.createElement("div");
+      dbgBox.style.cssText = "position:fixed;left:0;right:0;bottom:0;max-height:38vh;overflow-y:auto;" +
+        "background:rgba(0,0,0,0.88);color:#7bffb0;font:11px/1.4 monospace;padding:6px 8px;z-index:99999;white-space:pre-wrap;";
+      document.body.appendChild(dbgBox);
+    }
+    var line = document.createElement("div");
+    line.textContent = new Date().toISOString().substr(11, 12) + "  " + msg;
+    dbgBox.appendChild(line);
+    dbgBox.scrollTop = dbgBox.scrollHeight;
+    while (dbgBox.children.length > 60) dbgBox.removeChild(dbgBox.firstChild);
+  }
+
   var homeScreen = document.getElementById("home-screen");
   var newScreen = document.getElementById("new-screen");
   var playScreen = document.getElementById("play-screen");
@@ -323,7 +341,6 @@
     resizeTimer = setTimeout(function () { if (current && current.geometry) renderPlay(false); }, 150);
   }
 
-  var TARGET_PIECE_PX = 130;
   var BUILD_BATCH_SIZE = 60;
 
   function renderPlay(resetView) {
@@ -331,9 +348,12 @@
     var geo = current.geometry;
     if (!geo) return;
 
-    // Piece render size is fixed for the life of the puzzle: aim for a
-    // comfortable touch target regardless of how many pieces there are.
-    current.pieceDisplayScale = Math.min(2, Math.max(0.12, TARGET_PIECE_PX / Math.min(geo.pieceW, geo.pieceH)));
+    // Render at the photo's own resolution — the board ends up roughly
+    // "actual size" (like a real puzzle laid out on the table), so the
+    // initial fit-to-screen zoom stays close to 1 instead of being forced
+    // way out just because pieces were inflated to a fixed comfortable
+    // size. Pinch-zoom is there for precision, not just to see the board.
+    current.pieceDisplayScale = Math.min(1.3, Math.max(0.35, 900 / Math.max(geo.cols * geo.pieceW, geo.rows * geo.pieceH)));
 
     var boardW = geo.cols * geo.pieceW * current.pieceDisplayScale;
     var boardH = geo.rows * geo.pieceH * current.pieceDisplayScale;
@@ -486,6 +506,7 @@
 
   function finishPieceDrag(el, piece, moved) {
     if (!moved) {
+      dbg("finishPieceDrag " + piece.id + ": not moved (tap) — rotation=" + !!current.record.rotationEnabled);
       if (current.record.rotationEnabled) rotatePiece(piece, el);
       return;
     }
@@ -505,10 +526,16 @@
     // (needed to see hundreds of pieces at once) that shrinks to almost
     // nothing on screen. Guarantee a minimum on-screen tolerance too.
     var threshold = Math.max(avgDim * SNAP_THRESHOLD_FRAC, SNAP_MIN_SCREEN_PX / current.viewZoom);
-    var withinDist = Math.hypot(impliedX - homeX, impliedY - homeY) < threshold;
+    var dist = Math.hypot(impliedX - homeX, impliedY - homeY);
+    var withinDist = dist < threshold;
     var rotationOk = !current.record.rotationEnabled || ((current.record.pieceRotations[piece.id] || 0) % 360 === 0);
+    dbg("finishPieceDrag " + piece.id + ": pieceRect=" + Math.round(pieceRect.left) + "," + Math.round(pieceRect.top) +
+      " wrapRect=" + Math.round(wrapRect.left) + "," + Math.round(wrapRect.top) + "," + Math.round(wrapRect.width) + "x" + Math.round(wrapRect.height) +
+      " zoom=" + current.viewZoom.toFixed(3) + " dist=" + Math.round(dist) + " threshold=" + Math.round(threshold) +
+      " withinDist=" + withinDist + " rotationOk=" + rotationOk);
 
     if (withinDist && rotationOk) {
+      dbg("  -> LOCKED at home");
       placePieceElOnBoard(el, piece);
       el.classList.add("just-placed");
       setTimeout(function () { el.classList.remove("just-placed"); }, 400);
@@ -525,14 +552,17 @@
 
     var trayRect = playTrayWrap.getBoundingClientRect();
     var droppedOnTray = pieceCenterY >= trayRect.top;
+    dbg("  pieceCenterY=" + Math.round(pieceCenterY) + " trayRect.top=" + Math.round(trayRect.top) + " droppedOnTray=" + droppedOnTray);
 
     if (droppedOnTray) {
+      dbg("  -> back to TRAY");
       delete current.record.loosePositions[piece.id];
       resetFloatStyles(el);
       playTray.appendChild(el);
     } else {
       // Left anywhere else on the board — like scattering a piece on the
       // table while you figure out where it goes. Stays draggable.
+      dbg("  -> LOOSE on board at " + Math.round(impliedX) + "," + Math.round(impliedY));
       current.record.loosePositions[piece.id] = { x: impliedX, y: impliedY };
       resetFloatStyles(el);
       placeLooseOnBoard(el, current.record.loosePositions[piece.id]);
@@ -566,6 +596,7 @@
       var dx = t.clientX - startX, dy = t.clientY - startY;
       if (!moved && Math.hypot(dx, dy) > TAP_MOVE_THRESHOLD) {
         moved = true;
+        dbg("moved=true for " + piece.id);
         beginPieceFloat(el, originLeft, originTop);
       }
       if (moved) {
@@ -581,6 +612,7 @@
       document.removeEventListener("touchend", onEnd);
       document.removeEventListener("touchcancel", onEnd);
       activeId = null;
+      dbg("touchend " + piece.id + " moved=" + moved);
       finishPieceDrag(el, piece, moved);
     }
 
@@ -594,6 +626,7 @@
       startX = t.clientX; startY = t.clientY;
       var rect = el.getBoundingClientRect();
       originLeft = rect.left; originTop = rect.top;
+      dbg("touchstart " + piece.id + " at " + Math.round(startX) + "," + Math.round(startY));
       document.addEventListener("touchmove", onMove, { passive: false });
       document.addEventListener("touchend", onEnd);
       document.addEventListener("touchcancel", onEnd);
@@ -667,8 +700,9 @@
 
   // ---------------- Board pan / pinch-zoom ----------------
 
-  var MIN_ZOOM_FACTOR = 1;    // relative to fitZoom
+  var MIN_ZOOM_FACTOR = 1;    // relative to fitZoom — never zoom out past "see it all"
   var MAX_ZOOM_FACTOR = 8;
+  var MAX_ZOOM_ABSOLUTE = 3;  // cap actual magnification so it never looks blurry
 
   var boardMode = null; // 'pan' | 'pinch'
   var panAnchor = null;
@@ -677,7 +711,8 @@
   function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
 
   function clampZoom(z) {
-    return Math.min(current.fitZoom * MAX_ZOOM_FACTOR, Math.max(current.fitZoom * MIN_ZOOM_FACTOR, z));
+    var max = Math.min(current.fitZoom * MAX_ZOOM_FACTOR, MAX_ZOOM_ABSOLUTE);
+    return Math.min(max, Math.max(current.fitZoom * MIN_ZOOM_FACTOR, z));
   }
 
   function startBoardGestureFromPoints(points) {
