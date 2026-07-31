@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<title>Puzzle Photo</title>
+<meta name="description" content="Transforme tes photos en puzzles, 100% hors-ligne">
+<meta name="theme-color" content="#100c1c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Puzzle Photo">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="home-screen" class="screen">
+  <h1 class="brand">Puzzle <span class="accent">Photo</span></h1>
+  <p class="home-sub">Tes photos, en vrais puzzles. 100% hors-ligne.</p>
+  <div id="puzzle-grid" class="puzzle-grid">
+    <button id="new-puzzle-tile" class="new-puzzle-tile" type="button">
+      <span class="plus">+</span>
+      <span>Nouveau puzzle</span>
+    </button>
+  </div>
+</div>
+
+<div id="new-screen" class="screen scroll-screen" hidden>
+  <div class="topbar">
+    <button id="new-back" class="icon-btn" type="button" aria-label="Retour">&#8592;</button>
+    <div class="topbar-title"><h1 class="brand small">Nouveau puzzle</h1></div>
+  </div>
+
+  <label class="field-label">Photo</label>
+  <div id="photo-pick-row" class="photo-pick-row">
+    <button id="pick-camera" class="photo-pick-btn" type="button">
+      <span class="emoji">&#128247;</span>
+      Prendre une photo
+    </button>
+    <button id="pick-gallery" class="photo-pick-btn" type="button">
+      <span class="emoji">&#128444;&#65039;</span>
+      Choisir une photo
+    </button>
+  </div>
+  <div id="photo-preview-wrap" class="photo-preview-wrap" hidden>
+    <img id="photo-preview" alt="Photo choisie">
+    <button id="photo-change" class="photo-change-btn" type="button">Changer</button>
+  </div>
+  <input type="file" id="camera-input" class="hidden-input" accept="image/*" capture="environment">
+  <input type="file" id="gallery-input" class="hidden-input" accept="image/*">
+
+  <label class="field-label">Nom du puzzle</label>
+  <input type="text" id="puzzle-name" placeholder="Ex : Vacances en Bretagne" maxlength="40" style="width:100%;padding:13px 14px;border-radius:12px;border:none;background:var(--panel);color:var(--text);font-size:16px;">
+
+  <label class="field-label">Nombre de pièces</label>
+  <div class="range-value-row">
+    <span id="pieces-value" class="range-value">48</span>
+    <span id="grid-hint" class="grid-hint"></span>
+  </div>
+  <input type="range" id="pieces-range" min="12" max="200" step="4" value="48">
+
+  <label class="field-label">Difficulté (forme des pièces)</label>
+  <div class="segmented" id="difficulty-segmented">
+    <button type="button" data-value="easy">Facile</button>
+    <button type="button" data-value="medium" class="selected">Moyen</button>
+    <button type="button" data-value="hard">Difficile</button>
+  </div>
+
+  <div class="toggle-row">
+    <div>
+      <div class="toggle-row-label">Pièces tournées</div>
+      <div class="toggle-row-sub">Option difficile : il faut aussi trouver le bon angle</div>
+    </div>
+    <button id="rotation-toggle" class="switch" type="button" aria-label="Activer la rotation"></button>
+  </div>
+
+  <button id="create-puzzle" class="btn btn-primary" type="button" disabled>Créer le puzzle</button>
+</div>
+
+<div id="play-screen" class="screen" hidden>
+  <header class="topbar">
+    <button id="play-back" class="icon-btn" type="button" aria-label="Retour">&#8592;</button>
+    <div class="topbar-title"><h1 id="play-title" class="brand small"></h1></div>
+    <div class="topbar-right">
+      <span id="play-progress" class="progress-label"></span>
+      <button id="play-menu-btn" class="icon-btn" type="button" aria-label="Menu">&#8942;</button>
+    </div>
+  </header>
+  <div id="play-menu" class="app-menu" hidden>
+    <button id="menu-shuffle" class="menu-item" type="button">Remélanger les pièces restantes</button>
+    <button id="menu-delete" class="menu-item danger" type="button">Supprimer ce puzzle</button>
+  </div>
+
+  <div class="play-board-wrap">
+    <div id="play-board" class="play-board"></div>
+  </div>
+  <div class="play-tray-wrap">
+    <div id="play-tray" class="play-tray"></div>
+  </div>
+</div>
+
+<div id="victory-overlay" class="victory-overlay" hidden>
+  <canvas id="confetti-canvas"></canvas>
+  <div class="victory-card">
+    <img id="victory-photo" alt="Puzzle terminé">
+    <p class="victory-eyebrow">Puzzle terminé !</p>
+    <h2 id="winner-name" class="winner-name"></h2>
+    <p id="winner-score" class="winner-score"></p>
+    <div class="victory-actions">
+      <button id="victory-library" class="btn btn-primary" type="button">Mes puzzles</button>
+    </div>
+  </div>
+</div>
+
+<script src="engine.js"></script>
+<script src="db.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
