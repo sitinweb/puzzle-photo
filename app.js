@@ -3,6 +3,7 @@
 
   var MAX_DIM = 2200;
   var SNAP_THRESHOLD_FRAC = 0.42; // fraction of average piece dimension
+  var SNAP_MIN_SCREEN_PX = 60;    // always at least this many *screen* pixels, whatever the zoom
   var TAP_MOVE_THRESHOLD = 8;
 
   var homeScreen = document.getElementById("home-screen");
@@ -466,7 +467,11 @@
     var scale = current.pieceDisplayScale;
     var homeX = piece.bbox.x * scale, homeY = piece.bbox.y * scale;
     var avgDim = ((piece.bbox.w + piece.bbox.h) / 2) * scale;
-    var withinDist = Math.hypot(impliedX - homeX, impliedY - homeY) < avgDim * SNAP_THRESHOLD_FRAC;
+    // The tolerance is computed in board-local units, but at low zoom
+    // (needed to see hundreds of pieces at once) that shrinks to almost
+    // nothing on screen. Guarantee a minimum on-screen tolerance too.
+    var threshold = Math.max(avgDim * SNAP_THRESHOLD_FRAC, SNAP_MIN_SCREEN_PX / current.viewZoom);
+    var withinDist = Math.hypot(impliedX - homeX, impliedY - homeY) < threshold;
     var rotationOk = !current.record.rotationEnabled || ((current.record.pieceRotations[piece.id] || 0) % 360 === 0);
 
     if (withinDist && rotationOk) {
