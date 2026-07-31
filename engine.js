@@ -77,8 +77,10 @@
 
   var KAPPA = 0.5522847498;
 
+  // Returns an array of local (pre-rotation) numeric commands:
+  // {op:'L', x, y} or {op:'C', x1,y1,x2,y2,x3,y3}, from (0,0) to (len,0).
   function edgeSegment(len, info) {
-    if (info.kind === "flat") return "L " + len.toFixed(2) + " 0 ";
+    if (info.kind === "flat") return [{ op: "L", x: len, y: 0 }];
 
     var seam = info.seam;
     var sign = info.kind === "tab" ? 1 : -1;
@@ -94,71 +96,77 @@
     var leftBaseX = center - rL;
     var rightBaseX = center + rR;
 
-    var pts = [
-      "L", leftBaseX.toFixed(2), "0",
-      "C",
-      leftBaseX.toFixed(2), (sign * KAPPA * rL).toFixed(2),
-      (center - KAPPA * rL).toFixed(2), apexY.toFixed(2),
-      center.toFixed(2), apexY.toFixed(2),
-      "C",
-      (center + KAPPA * rR).toFixed(2), apexY.toFixed(2),
-      rightBaseX.toFixed(2), (sign * KAPPA * rR).toFixed(2),
-      rightBaseX.toFixed(2), "0",
-      "L", len.toFixed(2), "0"
+    return [
+      { op: "L", x: leftBaseX, y: 0 },
+      {
+        op: "C",
+        x1: leftBaseX, y1: sign * KAPPA * rL,
+        x2: center - KAPPA * rL, y2: apexY,
+        x3: center, y3: apexY
+      },
+      {
+        op: "C",
+        x1: center + KAPPA * rR, y1: apexY,
+        x2: rightBaseX, y2: sign * KAPPA * rR,
+        x3: rightBaseX, y3: 0
+      },
+      { op: "L", x: len, y: 0 }
     ];
-    return pts.join(" ") + " ";
   }
 
-  function buildPiecePath(r, c, rows, cols, pieceW, pieceH, maps, params) {
+  function transformCmds(cmds, ox, oy, angleDeg) {
+    var rad = (angleDeg * Math.PI) / 180;
+    var cos = Math.cos(rad), sin = Math.sin(rad);
+    var out = new Array(cmds.length);
+    for (var i = 0; i < cmds.length; i++) {
+      var c = cmds[i];
+      if (c.op === "L") {
+        out[i] = { op: "L", x: ox + c.x * cos - c.y * sin, y: oy + c.x * sin + c.y * cos };
+      } else {
+        out[i] = {
+          op: "C",
+          x1: ox + c.x1 * cos - c.y1 * sin, y1: oy + c.x1 * sin + c.y1 * cos,
+          x2: ox + c.x2 * cos - c.y2 * sin, y2: oy + c.x2 * sin + c.y2 * cos,
+          x3: ox + c.x3 * cos - c.y3 * sin, y3: oy + c.x3 * sin + c.y3 * cos
+        };
+      }
+    }
+    return out;
+  }
+
+  // Formats a command array (as produced by buildPiecePath) into an SVG path
+  // string, applying a uniform scale and origin offset directly on the
+  // numbers — no string parsing involved, safe to call once per render.
+  function pathFromCmds(cmds, scale, ox, oy) {
+    var parts = new Array(cmds.length + 1);
+    for (var i = 0; i < cmds.length; i++) {
+      var c = cmds[i];
+      if (c.op === "M" || c.op === "L") {
+        parts[i] = c.op + " " + ((c.x - ox) * scale).toFixed(2) + " " + ((c.y - oy) * scale).toFixed(2);
+      } else {
+        parts[i] = "C " +
+          ((c.x1 - ox) * scale).toFixed(2) + " " + ((c.y1 - oy) * scale).toFixed(2) + ", " +
+          ((c.x2 - ox) * scale).toFixed(2) + " " + ((c.y2 - oy) * scale).toFixed(2) + ", " +
+          ((c.x3 - ox) * scale).toFixed(2) + " " + ((c.y3 - oy) * scale).toFixed(2);
+      }
+    }
+    parts[cmds.length] = "Z";
+    return parts.join(" ");
+  }
+
+  function buildPieceCmds(r, c, rows, cols, pieceW, pieceH, maps) {
     var x0 = c * pieceW, y0 = r * pieceH;
     var top = edgeInfo(r, c, "top", rows, cols, maps);
     var right = edgeInfo(r, c, "right", rows, cols, maps);
     var bottom = edgeInfo(r, c, "bottom", rows, cols, maps);
     var left = edgeInfo(r, c, "left", rows, cols, maps);
 
-    function transform(localCmds, ox, oy, angleDeg) {
-      var rad = (angleDeg * Math.PI) / 180;
-      var cos = Math.cos(rad), sin = Math.sin(rad);
-      var tokens = localCmds.trim().split(/\s+/);
-      var out = [];
-      var i = 0;
-      while (i < tokens.length) {
-        var tok = tokens[i];
-        if (tok === "L") {
-          var x = parseFloat(tokens[i + 1]), y = parseFloat(tokens[i + 2]);
-          out.push("L", (ox + x * cos - y * sin).toFixed(2), (oy + x * sin + y * cos).toFixed(2));
-          i += 3;
-        } else if (tok === "C") {
-          var x1 = parseFloat(tokens[i + 1]), y1 = parseFloat(tokens[i + 2]);
-          var x2 = parseFloat(tokens[i + 3]), y2 = parseFloat(tokens[i + 4]);
-          var x3 = parseFloat(tokens[i + 5]), y3 = parseFloat(tokens[i + 6]);
-          out.push(
-            "C",
-            (ox + x1 * cos - y1 * sin).toFixed(2), (oy + x1 * sin + y1 * cos).toFixed(2),
-            (ox + x2 * cos - y2 * sin).toFixed(2), (oy + x2 * sin + y2 * cos).toFixed(2),
-            (ox + x3 * cos - y3 * sin).toFixed(2), (oy + x3 * sin + y3 * cos).toFixed(2)
-          );
-          i += 7;
-        } else { i++; }
-      }
-      return out.join(" ") + " ";
-    }
-
-    var d = "M " + x0.toFixed(2) + " " + y0.toFixed(2) + " ";
-    d += transform(edgeSegment(pieceW, top), x0, y0, 0);
-    d += transform(edgeSegment(pieceH, right), x0 + pieceW, y0, 90);
-    d += transform(edgeSegment(pieceW, bottom), x0 + pieceW, y0 + pieceH, 180);
-    d += transform(edgeSegment(pieceH, left), x0, y0 + pieceH, 270);
-    d += "Z";
-
-    var overshoot = Math.max(pieceW, pieceH) * (params.tabMax + 0.05);
-    var bbox = {
-      x: x0 - overshoot,
-      y: y0 - overshoot,
-      w: pieceW + overshoot * 2,
-      h: pieceH + overshoot * 2
-    };
-    return { path: d, bbox: bbox };
+    var cmds = [{ op: "M", x: x0, y: y0 }];
+    cmds = cmds.concat(transformCmds(edgeSegment(pieceW, top), x0, y0, 0));
+    cmds = cmds.concat(transformCmds(edgeSegment(pieceH, right), x0 + pieceW, y0, 90));
+    cmds = cmds.concat(transformCmds(edgeSegment(pieceW, bottom), x0 + pieceW, y0 + pieceH, 180));
+    cmds = cmds.concat(transformCmds(edgeSegment(pieceH, left), x0, y0 + pieceH, 270));
+    return cmds;
   }
 
   function generatePuzzle(imgW, imgH, pieceCount, difficulty, seed) {
@@ -168,19 +176,26 @@
     var rng = mulberry32(seed);
     var params = DIFFICULTY_PARAMS[difficulty] || DIFFICULTY_PARAMS.medium;
     var maps = buildEdgeMaps(rows, cols, rng, params);
+    var overshoot = Math.max(pieceW, pieceH) * (params.tabMax + 0.05);
 
     var pieces = [];
     for (var r = 0; r < rows; r++) {
       for (var c = 0; c < cols; c++) {
-        var built = buildPiecePath(r, c, rows, cols, pieceW, pieceH, maps, params);
+        var x0 = c * pieceW, y0 = r * pieceH;
+        var cmds = buildPieceCmds(r, c, rows, cols, pieceW, pieceH, maps);
         pieces.push({
           id: r + "_" + c,
           row: r,
           col: c,
-          path: built.path,
-          bbox: built.bbox,
-          homeX: c * pieceW,
-          homeY: r * pieceH
+          cmds: cmds,
+          bbox: {
+            x: x0 - overshoot,
+            y: y0 - overshoot,
+            w: pieceW + overshoot * 2,
+            h: pieceH + overshoot * 2
+          },
+          homeX: x0,
+          homeY: y0
         });
       }
     }
@@ -190,6 +205,7 @@
   window.PuzzleEngine = {
     computeGrid: computeGrid,
     generatePuzzle: generatePuzzle,
+    pathFromCmds: pathFromCmds,
     mulberry32: mulberry32
   };
 })();

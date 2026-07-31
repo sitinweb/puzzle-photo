@@ -1,4 +1,4 @@
-var CACHE_NAME = "puzzle-photo-cache-v1";
+var CACHE_NAME = "puzzle-photo-cache-v2";
 var ASSETS = [
   "./",
   "index.html",
@@ -16,7 +16,14 @@ var ASSETS = [
 self.addEventListener("install", function (event) {
   event.waitUntil(
     caches.open(CACHE_NAME).then(function (cache) {
-      return cache.addAll(ASSETS);
+      // Force real network fetches (bypassing HTTP cache and any still-active
+      // previous service worker) so an update can never re-cache stale
+      // content it picked up from itself.
+      return Promise.all(ASSETS.map(function (url) {
+        return fetch(url, { cache: "reload" }).then(function (response) {
+          return cache.put(url, response);
+        });
+      }));
     }).then(function () { return self.skipWaiting(); })
   );
 });

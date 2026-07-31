@@ -213,8 +213,14 @@
     if (!pendingPhoto) return;
     var pieceCount = parseInt(piecesRange.value, 10);
     var seed = Math.floor(Math.random() * 2147483647);
-    var geometry = PuzzleEngine.generatePuzzle(pendingPhoto.width, pendingPhoto.height, pieceCount, selectedDifficulty, seed);
-    var ids = geometry.pieces.map(function (p) { return p.id; });
+
+    // Just the grid + ids here — the actual piece geometry (the expensive
+    // part) is generated once, lazily, when the puzzle is opened.
+    var grid = PuzzleEngine.computeGrid(pendingPhoto.width, pendingPhoto.height, pieceCount);
+    var ids = [];
+    for (var r = 0; r < grid.rows; r++) {
+      for (var c = 0; c < grid.cols; c++) ids.push(r + "_" + c);
+    }
     shuffleArray(ids);
 
     var initialRotations = {};
@@ -231,7 +237,7 @@
       photoBlob: pendingPhoto.blob,
       imgW: pendingPhoto.width,
       imgH: pendingPhoto.height,
-      pieceCount: geometry.pieces.length,
+      pieceCount: ids.length,
       difficulty: selectedDifficulty,
       rotationEnabled: rotationEnabled,
       seed: seed,
@@ -263,17 +269,22 @@
     });
   }
 
+  var loadingOverlay = document.getElementById("loading-overlay");
+  var loadingProgress = document.getElementById("loading-progress");
+
+  function showLoading(show, label) {
+    loadingOverlay.hidden = !show;
+    loadingProgress.textContent = label || "";
+  }
+
   function setupPlay(record) {
     if (current && current.photoUrl) URL.revokeObjectURL(current.photoUrl);
     var photoUrl = URL.createObjectURL(record.photoBlob);
-    var geometry = PuzzleEngine.generatePuzzle(record.imgW, record.imgH, record.pieceCount, record.difficulty, record.seed);
-    var piecesById = {};
-    geometry.pieces.forEach(function (p) { piecesById[p.id] = p; });
 
     current = {
       record: record,
-      geometry: geometry,
-      piecesById: piecesById,
+      geometry: null,
+      piecesById: {},
       photoUrl: photoUrl,
       pieceDisplayScale: 1,
       viewZoom: 1,
@@ -284,21 +295,37 @@
     };
 
     playTitle.textContent = record.name;
-    renderPlay(true);
+    playProgress.textContent = "";
+    playBoard.innerHTML = "";
+    playTray.innerHTML = "";
     window.addEventListener("resize", onResizeDebounced);
+
+    showLoading(true, "Calcul des pièces…");
+    // Let the loading screen paint before the (potentially heavy) geometry
+    // generation runs on the main thread.
+    setTimeout(function () {
+      var geometry = PuzzleEngine.generatePuzzle(record.imgW, record.imgH, record.pieceCount, record.difficulty, record.seed);
+      var piecesById = {};
+      geometry.pieces.forEach(function (p) { piecesById[p.id] = p; });
+      current.geometry = geometry;
+      current.piecesById = piecesById;
+      renderPlay(true);
+    }, 30);
   }
 
   var resizeTimer = null;
   function onResizeDebounced() {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(function () { if (current) renderPlay(false); }, 150);
+    resizeTimer = setTimeout(function () { if (current && current.geometry) renderPlay(false); }, 150);
   }
 
   var TARGET_PIECE_PX = 130;
+  var BUILD_BATCH_SIZE = 60;
 
   function renderPlay(resetView) {
     var rec = current.record;
     var geo = current.geometry;
+    if (!geo) return;
 
     // Piece render size is fixed for the life of the puzzle: aim for a
     // comfortable touch target regardless of how many pieces there are.
@@ -312,20 +339,6 @@
     playBoard.innerHTML = "";
     playTray.innerHTML = "";
 
-    var placedSet = {};
-    rec.placedIds.forEach(function (id) { placedSet[id] = true; });
-
-    playProgress.textContent = rec.placedIds.length + "/" + rec.pieceCount;
-
-    geo.pieces.forEach(function (piece) {
-      var el = buildPieceEl(piece);
-      if (placedSet[piece.id]) {
-        placePieceElOnBoard(el, piece);
-      } else {
-        playTray.appendChild(el);
-      }
-    });
-
     if (resetView) {
       var wrapRect = playBoardWrap.getBoundingClientRect();
       var fit = Math.min(wrapRect.width / boardW, wrapRect.height / boardH);
@@ -336,6 +349,34 @@
       current.panY = (wrapRect.height - boardH * fit) / 2;
     }
     applyBoardTransform();
+
+    var placedSet = {};
+    rec.placedIds.forEach(function (id) { placedSet[id] = true; });
+    playProgress.textContent = rec.placedIds.length + "/" + rec.pieceCount;
+
+    var pieces = geo.pieces;
+    var idx = 0;
+    showLoading(true, "0 / " + pieces.length + " pièces");
+
+    function buildBatch() {
+      var end = Math.min(idx + BUILD_BATCH_SIZE, pieces.length);
+      for (; idx < end; idx++) {
+        var piece = pieces[idx];
+        var el = buildPieceEl(piece);
+        if (placedSet[piece.id]) {
+          placePieceElOnBoard(el, piece);
+        } else {
+          playTray.appendChild(el);
+        }
+      }
+      if (idx < pieces.length) {
+        loadingProgress.textContent = idx + " / " + pieces.length + " pièces";
+        requestAnimationFrame(buildBatch);
+      } else {
+        showLoading(false);
+      }
+    }
+    requestAnimationFrame(buildBatch);
   }
 
   function applyBoardTransform() {
@@ -355,7 +396,7 @@
     el.style.backgroundImage = "url(" + current.photoUrl + ")";
     el.style.backgroundSize = (rec.imgW * scale) + "px " + (rec.imgH * scale) + "px";
     el.style.backgroundPosition = (-piece.bbox.x * scale) + "px " + (-piece.bbox.y * scale) + "px";
-    el.style.clipPath = "path('" + scaledLocalPath(piece, scale) + "')";
+    el.style.clipPath = "path('" + PuzzleEngine.pathFromCmds(piece.cmds, scale, piece.bbox.x, piece.bbox.y) + "')";
     el.style.margin = "6px";
 
     var rotation = current.record.pieceRotations[piece.id] || 0;
@@ -369,30 +410,6 @@
 
   function isPlaced(id) {
     return current.record.placedIds.indexOf(id) !== -1;
-  }
-
-  function scaledLocalPath(piece, scale) {
-    var ox = piece.bbox.x, oy = piece.bbox.y;
-    var tokens = piece.path.trim().split(/\s+/);
-    var out = [];
-    var i = 0;
-    while (i < tokens.length) {
-      var tok = tokens[i];
-      if (tok === "M" || tok === "L") {
-        var x = (parseFloat(tokens[i + 1]) - ox) * scale;
-        var y = (parseFloat(tokens[i + 2]) - oy) * scale;
-        out.push(tok, x.toFixed(2), y.toFixed(2));
-        i += 3;
-      } else if (tok === "C") {
-        var x1 = (parseFloat(tokens[i + 1]) - ox) * scale, y1 = (parseFloat(tokens[i + 2]) - oy) * scale;
-        var x2 = (parseFloat(tokens[i + 3]) - ox) * scale, y2 = (parseFloat(tokens[i + 4]) - oy) * scale;
-        var x3 = (parseFloat(tokens[i + 5]) - ox) * scale, y3 = (parseFloat(tokens[i + 6]) - oy) * scale;
-        out.push(tok, x1.toFixed(2), y1.toFixed(2), x2.toFixed(2), y2.toFixed(2), x3.toFixed(2), y3.toFixed(2));
-        i += 7;
-      } else if (tok === "Z") { out.push("Z"); i++; }
-      else { i++; }
-    }
-    return out.join(" ");
   }
 
   function placePieceElOnBoard(el, piece) {
@@ -419,7 +436,134 @@
     return layer;
   }
 
+  var SUPPORTS_TOUCH = ("ontouchstart" in window) || (navigator.maxTouchPoints > 0);
+
+  function beginPieceFloat(el, originLeft, originTop) {
+    var layer = ensureDragLayer();
+    var w = el.offsetWidth, h = el.offsetHeight;
+    layer.appendChild(el);
+    el.style.position = "fixed";
+    el.style.left = originLeft + "px";
+    el.style.top = originTop + "px";
+    el.style.width = w + "px";
+    el.style.height = h + "px";
+    el.style.margin = "0";
+    el.style.pointerEvents = "auto";
+    el.classList.add("dragging");
+  }
+
+  function finishPieceDrag(el, piece, moved, originalParent, originalNext) {
+    if (!moved) {
+      if (current.record.rotationEnabled) rotatePiece(piece, el);
+      return;
+    }
+
+    el.classList.remove("dragging");
+    var wrapRect = playBoardWrap.getBoundingClientRect();
+    var pieceRect = el.getBoundingClientRect();
+    var impliedX = (pieceRect.left - wrapRect.left - current.panX) / current.viewZoom;
+    var impliedY = (pieceRect.top - wrapRect.top - current.panY) / current.viewZoom;
+    var scale = current.pieceDisplayScale;
+    var homeX = piece.bbox.x * scale, homeY = piece.bbox.y * scale;
+    var avgDim = ((piece.bbox.w + piece.bbox.h) / 2) * scale;
+    var withinDist = Math.hypot(impliedX - homeX, impliedY - homeY) < avgDim * SNAP_THRESHOLD_FRAC;
+    var rotationOk = !current.record.rotationEnabled || ((current.record.pieceRotations[piece.id] || 0) % 360 === 0);
+
+    if (withinDist && rotationOk) {
+      placePieceElOnBoard(el, piece);
+      el.classList.add("just-placed");
+      setTimeout(function () { el.classList.remove("just-placed"); }, 400);
+      if (current.record.placedIds.indexOf(piece.id) === -1) {
+        current.record.placedIds.push(piece.id);
+      }
+      delete current.record.pieceRotations[piece.id];
+      PuzzleDB.put(current.record);
+      playProgress.textContent = current.record.placedIds.length + "/" + current.record.pieceCount;
+      checkWin();
+    } else {
+      el.style.position = "";
+      el.style.left = "";
+      el.style.top = "";
+      el.style.width = "";
+      el.style.height = "";
+      el.style.margin = "6px";
+      el.style.pointerEvents = "";
+      if (originalNext && originalNext.parentNode === originalParent) {
+        originalParent.insertBefore(el, originalNext);
+      } else {
+        originalParent.appendChild(el);
+      }
+    }
+  }
+
   function attachPieceDrag(el, piece) {
+    if (SUPPORTS_TOUCH) attachPieceDragTouch(el, piece);
+    attachPieceDragPointer(el, piece);
+  }
+
+  // Touch Events: the primary path. Supported everywhere on mobile,
+  // including older/OEM Android WebViews where Pointer Events can be
+  // unreliable for multi-finger / reparented-element scenarios.
+  function attachPieceDragTouch(el, piece) {
+    var moved = false;
+    var startX, startY, originLeft, originTop;
+    var originalParent, originalNext;
+    var activeId = null;
+
+    function findTouch(list) {
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].identifier === activeId) return list[i];
+      }
+      return null;
+    }
+
+    function onMove(e) {
+      var t = findTouch(e.touches);
+      if (!t) return;
+      var dx = t.clientX - startX, dy = t.clientY - startY;
+      if (!moved && Math.hypot(dx, dy) > TAP_MOVE_THRESHOLD) {
+        moved = true;
+        beginPieceFloat(el, originLeft, originTop);
+      }
+      if (moved) {
+        e.preventDefault();
+        el.style.left = (originLeft + dx) + "px";
+        el.style.top = (originTop + dy) + "px";
+      }
+    }
+
+    function onEnd(e) {
+      if (findTouch(e.touches)) return;
+      document.removeEventListener("touchmove", onMove, { passive: false });
+      document.removeEventListener("touchend", onEnd);
+      document.removeEventListener("touchcancel", onEnd);
+      activeId = null;
+      finishPieceDrag(el, piece, moved, originalParent, originalNext);
+    }
+
+    el.addEventListener("touchstart", function (e) {
+      if (el.classList.contains("placed") || activeId !== null) return;
+      var t = e.changedTouches[0];
+      e.preventDefault();
+      e.stopPropagation();
+      moved = false;
+      activeId = t.identifier;
+      startX = t.clientX; startY = t.clientY;
+      var rect = el.getBoundingClientRect();
+      originLeft = rect.left; originTop = rect.top;
+      originalParent = el.parentNode;
+      originalNext = el.nextSibling;
+      document.addEventListener("touchmove", onMove, { passive: false });
+      document.addEventListener("touchend", onEnd);
+      document.addEventListener("touchcancel", onEnd);
+    }, { passive: false });
+  }
+
+  // Pointer Events: kept for mouse / trackpad / desktop testing. On touch
+  // devices the touchstart handler above calls preventDefault(), which
+  // suppresses the browser's compatibility pointer/mouse events for that
+  // same touch, so the two paths don't double-handle a single gesture.
+  function attachPieceDragPointer(el, piece) {
     var moved = false;
     var startX, startY, originLeft, originTop;
     var originalParent, originalNext;
@@ -430,17 +574,7 @@
       var dx = e.clientX - startX, dy = e.clientY - startY;
       if (!moved && Math.hypot(dx, dy) > TAP_MOVE_THRESHOLD) {
         moved = true;
-        var layer = ensureDragLayer();
-        var w = el.offsetWidth, h = el.offsetHeight;
-        layer.appendChild(el);
-        el.style.position = "fixed";
-        el.style.left = originLeft + "px";
-        el.style.top = originTop + "px";
-        el.style.width = w + "px";
-        el.style.height = h + "px";
-        el.style.margin = "0";
-        el.style.pointerEvents = "auto";
-        el.classList.add("dragging");
+        beginPieceFloat(el, originLeft, originTop);
       }
       if (moved) {
         e.preventDefault();
@@ -455,51 +589,11 @@
       document.removeEventListener("pointerup", onUp);
       document.removeEventListener("pointercancel", onUp);
       activePointerId = null;
-
-      if (!moved) {
-        if (current.record.rotationEnabled) rotatePiece(piece, el);
-        return;
-      }
-
-      el.classList.remove("dragging");
-      var wrapRect = playBoardWrap.getBoundingClientRect();
-      var pieceRect = el.getBoundingClientRect();
-      var impliedX = (pieceRect.left - wrapRect.left - current.panX) / current.viewZoom;
-      var impliedY = (pieceRect.top - wrapRect.top - current.panY) / current.viewZoom;
-      var scale = current.pieceDisplayScale;
-      var homeX = piece.bbox.x * scale, homeY = piece.bbox.y * scale;
-      var avgDim = ((piece.bbox.w + piece.bbox.h) / 2) * scale;
-      var withinDist = Math.hypot(impliedX - homeX, impliedY - homeY) < avgDim * SNAP_THRESHOLD_FRAC;
-      var rotationOk = !current.record.rotationEnabled || ((current.record.pieceRotations[piece.id] || 0) % 360 === 0);
-
-      if (withinDist && rotationOk) {
-        placePieceElOnBoard(el, piece);
-        el.classList.add("just-placed");
-        setTimeout(function () { el.classList.remove("just-placed"); }, 400);
-        if (current.record.placedIds.indexOf(piece.id) === -1) {
-          current.record.placedIds.push(piece.id);
-        }
-        delete current.record.pieceRotations[piece.id];
-        PuzzleDB.put(current.record);
-        playProgress.textContent = current.record.placedIds.length + "/" + current.record.pieceCount;
-        checkWin();
-      } else {
-        el.style.position = "";
-        el.style.left = "";
-        el.style.top = "";
-        el.style.width = "";
-        el.style.height = "";
-        el.style.margin = "6px";
-        el.style.pointerEvents = "";
-        if (originalNext && originalNext.parentNode === originalParent) {
-          originalParent.insertBefore(el, originalNext);
-        } else {
-          originalParent.appendChild(el);
-        }
-      }
+      finishPieceDrag(el, piece, moved, originalParent, originalNext);
     }
 
     el.addEventListener("pointerdown", function (e) {
+      if (e.pointerType === "touch") return;
       if (el.classList.contains("placed")) return;
       e.preventDefault();
       e.stopPropagation();
@@ -538,7 +632,6 @@
   var MIN_ZOOM_FACTOR = 1;    // relative to fitZoom
   var MAX_ZOOM_FACTOR = 8;
 
-  var boardPointers = new Map();
   var boardMode = null; // 'pan' | 'pinch'
   var panAnchor = null;
   var pinchAnchor = null;
@@ -549,20 +642,17 @@
     return Math.min(current.fitZoom * MAX_ZOOM_FACTOR, Math.max(current.fitZoom * MIN_ZOOM_FACTOR, z));
   }
 
-  function startBoardGesture() {
-    var entries = Array.from(boardPointers.entries());
-    if (entries.length === 1) {
+  function startBoardGestureFromPoints(points) {
+    if (points.length === 1) {
       boardMode = "pan";
-      panAnchor = { x: entries[0][1].x, y: entries[0][1].y, panX: current.panX, panY: current.panY };
+      panAnchor = { x: points[0].x, y: points[0].y, panX: current.panX, panY: current.panY };
       pinchAnchor = null;
-    } else if (entries.length >= 2) {
+    } else if (points.length >= 2) {
       boardMode = "pinch";
-      var p1 = entries[0][1], p2 = entries[1][1];
       pinchAnchor = {
-        id1: entries[0][0], id2: entries[1][0],
-        startDist: Math.max(1, dist(p1, p2)),
+        startDist: Math.max(1, dist(points[0], points[1])),
         startZoom: current.viewZoom,
-        startMidX: (p1.x + p2.x) / 2, startMidY: (p1.y + p2.y) / 2,
+        startMidX: (points[0].x + points[1].x) / 2, startMidY: (points[0].y + points[1].y) / 2,
         startPanX: current.panX, startPanY: current.panY
       };
       panAnchor = null;
@@ -572,22 +662,17 @@
     }
   }
 
-  function moveBoardGesture() {
+  function moveBoardGestureFromPoints(points) {
     if (!current) return;
     var wrapRect = playBoardWrap.getBoundingClientRect();
-    if (boardMode === "pan" && panAnchor) {
-      var p = boardPointers.values().next().value;
-      if (!p) return;
-      current.panX = panAnchor.panX + (p.x - panAnchor.x);
-      current.panY = panAnchor.panY + (p.y - panAnchor.y);
+    if (boardMode === "pan" && panAnchor && points.length >= 1) {
+      current.panX = panAnchor.panX + (points[0].x - panAnchor.x);
+      current.panY = panAnchor.panY + (points[0].y - panAnchor.y);
       applyBoardTransform();
-    } else if (boardMode === "pinch" && pinchAnchor) {
-      var p1 = boardPointers.get(pinchAnchor.id1);
-      var p2 = boardPointers.get(pinchAnchor.id2);
-      if (!p1 || !p2) return;
-      var newDist = Math.max(1, dist(p1, p2));
+    } else if (boardMode === "pinch" && pinchAnchor && points.length >= 2) {
+      var newDist = Math.max(1, dist(points[0], points[1]));
       var newZoom = clampZoom(pinchAnchor.startZoom * (newDist / pinchAnchor.startDist));
-      var midX = (p1.x + p2.x) / 2, midY = (p1.y + p2.y) / 2;
+      var midX = (points[0].x + points[1].x) / 2, midY = (points[0].y + points[1].y) / 2;
       var worldX = (pinchAnchor.startMidX - wrapRect.left - pinchAnchor.startPanX) / pinchAnchor.startZoom;
       var worldY = (pinchAnchor.startMidY - wrapRect.top - pinchAnchor.startPanY) / pinchAnchor.startZoom;
       current.viewZoom = newZoom;
@@ -597,23 +682,46 @@
     }
   }
 
+  function touchPoints(touchList) {
+    return Array.prototype.map.call(touchList, function (t) { return { x: t.clientX, y: t.clientY }; });
+  }
+
+  if (SUPPORTS_TOUCH) {
+    playBoardWrap.addEventListener("touchstart", function (e) {
+      if (!current) return;
+      if (e.target.closest(".puzzle-piece:not(.placed)")) return;
+      e.preventDefault();
+      startBoardGestureFromPoints(touchPoints(e.touches));
+    }, { passive: false });
+    playBoardWrap.addEventListener("touchmove", function (e) {
+      if (!boardMode) return;
+      e.preventDefault();
+      moveBoardGestureFromPoints(touchPoints(e.touches));
+    }, { passive: false });
+    var endBoardTouch = function (e) { startBoardGestureFromPoints(touchPoints(e.touches)); };
+    playBoardWrap.addEventListener("touchend", endBoardTouch);
+    playBoardWrap.addEventListener("touchcancel", endBoardTouch);
+  }
+
+  var boardPointers = new Map();
   playBoardWrap.addEventListener("pointerdown", function (e) {
+    if (e.pointerType === "touch") return;
     if (!current) return;
     if (e.target.closest(".puzzle-piece:not(.placed)")) return;
     boardPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     try { playBoardWrap.setPointerCapture(e.pointerId); } catch (err) {}
-    startBoardGesture();
+    startBoardGestureFromPoints(Array.from(boardPointers.values()));
   });
   playBoardWrap.addEventListener("pointermove", function (e) {
     if (!boardPointers.has(e.pointerId)) return;
     boardPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    moveBoardGesture();
+    moveBoardGestureFromPoints(Array.from(boardPointers.values()));
   });
   function endBoardPointer(e) {
     if (!boardPointers.has(e.pointerId)) return;
     boardPointers.delete(e.pointerId);
     try { playBoardWrap.releasePointerCapture(e.pointerId); } catch (err) {}
-    startBoardGesture();
+    startBoardGestureFromPoints(Array.from(boardPointers.values()));
   }
   playBoardWrap.addEventListener("pointerup", endBoardPointer);
   playBoardWrap.addEventListener("pointercancel", endBoardPointer);
@@ -723,6 +831,12 @@
   // ---------------- Boot ----------------
 
   if ("serviceWorker" in navigator) {
+    var swReloaded = false;
+    navigator.serviceWorker.addEventListener("controllerchange", function () {
+      if (swReloaded) return;
+      swReloaded = true;
+      location.reload();
+    });
     window.addEventListener("load", function () {
       navigator.serviceWorker.register("service-worker.js").catch(function () {});
     });
