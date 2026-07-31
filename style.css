@@ -33,6 +33,8 @@ body {
   height: 100dvh;
   -webkit-tap-highlight-color: transparent;
   overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 button { font-family: inherit; }
@@ -391,6 +393,10 @@ input[type="range"] { width: 100%; accent-color: var(--accent); height: 30px; }
   touch-action: none;
   cursor: grab;
   filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5));
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-user-drag: none;
 }
 .puzzle-piece.dragging {
   cursor: grabbing;

@@ -420,28 +420,13 @@
   }
 
   function attachPieceDrag(el, piece) {
-    var dragging = false;
     var moved = false;
     var startX, startY, originLeft, originTop;
     var originalParent, originalNext;
-    var pointerId = null;
+    var activePointerId = null;
 
-    el.addEventListener("pointerdown", function (e) {
-      if (el.classList.contains("placed")) return;
-      e.preventDefault();
-      e.stopPropagation();
-      dragging = true; moved = false;
-      pointerId = e.pointerId;
-      startX = e.clientX; startY = e.clientY;
-      var rect = el.getBoundingClientRect();
-      originLeft = rect.left; originTop = rect.top;
-      originalParent = el.parentNode;
-      originalNext = el.nextSibling;
-      el.setPointerCapture(e.pointerId);
-    });
-
-    el.addEventListener("pointermove", function (e) {
-      if (!dragging || e.pointerId !== pointerId) return;
+    function onMove(e) {
+      if (e.pointerId !== activePointerId) return;
       var dx = e.clientX - startX, dy = e.clientY - startY;
       if (!moved && Math.hypot(dx, dy) > TAP_MOVE_THRESHOLD) {
         moved = true;
@@ -458,15 +443,18 @@
         el.classList.add("dragging");
       }
       if (moved) {
+        e.preventDefault();
         el.style.left = (originLeft + dx) + "px";
         el.style.top = (originTop + dy) + "px";
       }
-    });
+    }
 
-    function endDrag(e) {
-      if (!dragging || e.pointerId !== pointerId) return;
-      dragging = false;
-      try { el.releasePointerCapture(e.pointerId); } catch (err) {}
+    function onUp(e) {
+      if (e.pointerId !== activePointerId) return;
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("pointercancel", onUp);
+      activePointerId = null;
 
       if (!moved) {
         if (current.record.rotationEnabled) rotatePiece(piece, el);
@@ -511,8 +499,21 @@
       }
     }
 
-    el.addEventListener("pointerup", endDrag);
-    el.addEventListener("pointercancel", endDrag);
+    el.addEventListener("pointerdown", function (e) {
+      if (el.classList.contains("placed")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      moved = false;
+      activePointerId = e.pointerId;
+      startX = e.clientX; startY = e.clientY;
+      var rect = el.getBoundingClientRect();
+      originLeft = rect.left; originTop = rect.top;
+      originalParent = el.parentNode;
+      originalNext = el.nextSibling;
+      document.addEventListener("pointermove", onMove);
+      document.addEventListener("pointerup", onUp);
+      document.addEventListener("pointercancel", onUp);
+    });
   }
 
   function rotatePiece(piece, el) {
