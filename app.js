@@ -308,6 +308,7 @@
     var boardH = geo.rows * geo.pieceH * current.pieceDisplayScale;
     playBoard.style.width = boardW + "px";
     playBoard.style.height = boardH + "px";
+    playBoard.style.setProperty("--ghost-image", "url(" + current.photoUrl + ")");
     playBoard.innerHTML = "";
     playTray.innerHTML = "";
 
@@ -485,6 +486,8 @@
 
       if (withinDist && rotationOk) {
         placePieceElOnBoard(el, piece);
+        el.classList.add("just-placed");
+        setTimeout(function () { el.classList.remove("just-placed"); }, 400);
         if (current.record.placedIds.indexOf(piece.id) === -1) {
           current.record.placedIds.push(piece.id);
         }
