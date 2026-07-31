@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  var MAX_DIM = 1400;
+  var MAX_DIM = 2200;
   var SNAP_THRESHOLD_FRAC = 0.42; // fraction of average piece dimension
   var TAP_MOVE_THRESHOLD = 8;
 
@@ -35,9 +35,13 @@
   var playMenu = document.getElementById("play-menu");
   var menuShuffleBtn = document.getElementById("menu-shuffle");
   var menuDeleteBtn = document.getElementById("menu-delete");
-  var playBoardWrap = document.querySelector(".play-board-wrap");
+  var playBoardWrap = document.getElementById("play-board-wrap");
+  var boardWorld = document.getElementById("board-world");
   var playBoard = document.getElementById("play-board");
   var playTray = document.getElementById("play-tray");
+  var zoomInBtn = document.getElementById("zoom-in");
+  var zoomOutBtn = document.getElementById("zoom-out");
+  var zoomResetBtn = document.getElementById("zoom-reset");
 
   var victoryOverlay = document.getElementById("victory-overlay");
   var victoryPhoto = document.getElementById("victory-photo");
@@ -122,7 +126,7 @@
     photoPreviewWrap.hidden = true;
     photoPickRow.hidden = false;
     puzzleNameInput.value = "";
-    piecesRange.value = 48;
+    piecesRange.value = 500;
     selectedDifficulty = "medium";
     rotationEnabled = false;
     updateDifficultyUI();
@@ -271,39 +275,37 @@
       geometry: geometry,
       piecesById: piecesById,
       photoUrl: photoUrl,
-      scale: 1,
+      pieceDisplayScale: 1,
+      viewZoom: 1,
+      fitZoom: 1,
+      panX: 0,
+      panY: 0,
       dragLayer: null
     };
 
     playTitle.textContent = record.name;
-    renderPlay();
+    renderPlay(true);
     window.addEventListener("resize", onResizeDebounced);
   }
 
   var resizeTimer = null;
   function onResizeDebounced() {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(function () { if (current) renderPlay(); }, 150);
+    resizeTimer = setTimeout(function () { if (current) renderPlay(false); }, 150);
   }
 
-  function renderPlay() {
+  var TARGET_PIECE_PX = 130;
+
+  function renderPlay(resetView) {
     var rec = current.record;
     var geo = current.geometry;
 
-    var screenEl = document.getElementById("play-screen");
-    var screenStyle = getComputedStyle(screenEl);
-    var topbarEl = screenEl.querySelector(".topbar");
-    var totalH = screenEl.clientHeight - parseFloat(screenStyle.paddingTop) - parseFloat(screenStyle.paddingBottom);
-    var topbarH = topbarEl.offsetHeight + 14;
-    var trayReserved = Math.round(window.innerHeight * 0.34) + 12;
-    var availW = playBoardWrap.clientWidth - 4;
-    var availH = totalH - topbarH - trayReserved - 4;
-    var scale = Math.min(availW / geo.pieceW / geo.cols, availH / geo.pieceH / geo.rows, 1);
-    scale = Math.min(scale, availW / (geo.cols * geo.pieceW), availH / (geo.rows * geo.pieceH));
-    current.scale = scale;
+    // Piece render size is fixed for the life of the puzzle: aim for a
+    // comfortable touch target regardless of how many pieces there are.
+    current.pieceDisplayScale = Math.min(2, Math.max(0.12, TARGET_PIECE_PX / Math.min(geo.pieceW, geo.pieceH)));
 
-    var boardW = geo.cols * geo.pieceW * scale;
-    var boardH = geo.rows * geo.pieceH * scale;
+    var boardW = geo.cols * geo.pieceW * current.pieceDisplayScale;
+    var boardH = geo.rows * geo.pieceH * current.pieceDisplayScale;
     playBoard.style.width = boardW + "px";
     playBoard.style.height = boardH + "px";
     playBoard.innerHTML = "";
@@ -317,19 +319,30 @@
     geo.pieces.forEach(function (piece) {
       var el = buildPieceEl(piece);
       if (placedSet[piece.id]) {
-        placePieceElOnBoard(el, piece, true);
+        placePieceElOnBoard(el, piece);
       } else {
         playTray.appendChild(el);
       }
     });
 
-    if (rec.placedIds.length === 0) {
-      // nothing extra
+    if (resetView) {
+      var wrapRect = playBoardWrap.getBoundingClientRect();
+      var fit = Math.min(wrapRect.width / boardW, wrapRect.height / boardH);
+      fit = Math.max(0.05, Math.min(fit, 3));
+      current.fitZoom = fit;
+      current.viewZoom = fit;
+      current.panX = (wrapRect.width - boardW * fit) / 2;
+      current.panY = (wrapRect.height - boardH * fit) / 2;
     }
+    applyBoardTransform();
+  }
+
+  function applyBoardTransform() {
+    boardWorld.style.transform = "translate(" + current.panX + "px," + current.panY + "px) scale(" + current.viewZoom + ")";
   }
 
   function buildPieceEl(piece) {
-    var scale = current.scale;
+    var scale = current.pieceDisplayScale;
     var rec = current.record;
     var el = document.createElement("div");
     el.className = "puzzle-piece";
@@ -349,7 +362,7 @@
       el.style.transform = "rotate(" + rotation + "deg)";
     }
 
-    attachDrag(el, piece);
+    attachPieceDrag(el, piece);
     return el;
   }
 
@@ -381,8 +394,8 @@
     return out.join(" ");
   }
 
-  function placePieceElOnBoard(el, piece, skipAnim) {
-    var scale = current.scale;
+  function placePieceElOnBoard(el, piece) {
+    var scale = current.pieceDisplayScale;
     playBoard.appendChild(el);
     el.style.position = "absolute";
     el.style.left = (piece.bbox.x * scale) + "px";
@@ -405,16 +418,19 @@
     return layer;
   }
 
-  function attachDrag(el, piece) {
+  function attachPieceDrag(el, piece) {
     var dragging = false;
     var moved = false;
     var startX, startY, originLeft, originTop;
     var originalParent, originalNext;
+    var pointerId = null;
 
     el.addEventListener("pointerdown", function (e) {
       if (el.classList.contains("placed")) return;
       e.preventDefault();
+      e.stopPropagation();
       dragging = true; moved = false;
+      pointerId = e.pointerId;
       startX = e.clientX; startY = e.clientY;
       var rect = el.getBoundingClientRect();
       originLeft = rect.left; originTop = rect.top;
@@ -424,7 +440,7 @@
     });
 
     el.addEventListener("pointermove", function (e) {
-      if (!dragging) return;
+      if (!dragging || e.pointerId !== pointerId) return;
       var dx = e.clientX - startX, dy = e.clientY - startY;
       if (!moved && Math.hypot(dx, dy) > TAP_MOVE_THRESHOLD) {
         moved = true;
@@ -447,7 +463,7 @@
     });
 
     function endDrag(e) {
-      if (!dragging) return;
+      if (!dragging || e.pointerId !== pointerId) return;
       dragging = false;
       try { el.releasePointerCapture(e.pointerId); } catch (err) {}
 
@@ -457,17 +473,18 @@
       }
 
       el.classList.remove("dragging");
-      var boardRect = playBoard.getBoundingClientRect();
+      var wrapRect = playBoardWrap.getBoundingClientRect();
       var pieceRect = el.getBoundingClientRect();
-      var scale = current.scale;
-      var impliedX = (pieceRect.left - boardRect.left) / scale;
-      var impliedY = (pieceRect.top - boardRect.top) / scale;
-      var avgDim = (piece.bbox.w + piece.bbox.h) / 2;
-      var withinDist = Math.hypot(impliedX - piece.bbox.x, impliedY - piece.bbox.y) < avgDim * SNAP_THRESHOLD_FRAC;
+      var impliedX = (pieceRect.left - wrapRect.left - current.panX) / current.viewZoom;
+      var impliedY = (pieceRect.top - wrapRect.top - current.panY) / current.viewZoom;
+      var scale = current.pieceDisplayScale;
+      var homeX = piece.bbox.x * scale, homeY = piece.bbox.y * scale;
+      var avgDim = ((piece.bbox.w + piece.bbox.h) / 2) * scale;
+      var withinDist = Math.hypot(impliedX - homeX, impliedY - homeY) < avgDim * SNAP_THRESHOLD_FRAC;
       var rotationOk = !current.record.rotationEnabled || ((current.record.pieceRotations[piece.id] || 0) % 360 === 0);
 
       if (withinDist && rotationOk) {
-        placePieceElOnBoard(el, piece, false);
+        placePieceElOnBoard(el, piece);
         if (current.record.placedIds.indexOf(piece.id) === -1) {
           current.record.placedIds.push(piece.id);
         }
@@ -512,9 +529,112 @@
     }
   }
 
+  // ---------------- Board pan / pinch-zoom ----------------
+
+  var MIN_ZOOM_FACTOR = 1;    // relative to fitZoom
+  var MAX_ZOOM_FACTOR = 8;
+
+  var boardPointers = new Map();
+  var boardMode = null; // 'pan' | 'pinch'
+  var panAnchor = null;
+  var pinchAnchor = null;
+
+  function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+
+  function clampZoom(z) {
+    return Math.min(current.fitZoom * MAX_ZOOM_FACTOR, Math.max(current.fitZoom * MIN_ZOOM_FACTOR, z));
+  }
+
+  function startBoardGesture() {
+    var entries = Array.from(boardPointers.entries());
+    if (entries.length === 1) {
+      boardMode = "pan";
+      panAnchor = { x: entries[0][1].x, y: entries[0][1].y, panX: current.panX, panY: current.panY };
+      pinchAnchor = null;
+    } else if (entries.length >= 2) {
+      boardMode = "pinch";
+      var p1 = entries[0][1], p2 = entries[1][1];
+      pinchAnchor = {
+        id1: entries[0][0], id2: entries[1][0],
+        startDist: Math.max(1, dist(p1, p2)),
+        startZoom: current.viewZoom,
+        startMidX: (p1.x + p2.x) / 2, startMidY: (p1.y + p2.y) / 2,
+        startPanX: current.panX, startPanY: current.panY
+      };
+      panAnchor = null;
+    } else {
+      boardMode = null;
+      panAnchor = null; pinchAnchor = null;
+    }
+  }
+
+  function moveBoardGesture() {
+    if (!current) return;
+    var wrapRect = playBoardWrap.getBoundingClientRect();
+    if (boardMode === "pan" && panAnchor) {
+      var p = boardPointers.values().next().value;
+      if (!p) return;
+      current.panX = panAnchor.panX + (p.x - panAnchor.x);
+      current.panY = panAnchor.panY + (p.y - panAnchor.y);
+      applyBoardTransform();
+    } else if (boardMode === "pinch" && pinchAnchor) {
+      var p1 = boardPointers.get(pinchAnchor.id1);
+      var p2 = boardPointers.get(pinchAnchor.id2);
+      if (!p1 || !p2) return;
+      var newDist = Math.max(1, dist(p1, p2));
+      var newZoom = clampZoom(pinchAnchor.startZoom * (newDist / pinchAnchor.startDist));
+      var midX = (p1.x + p2.x) / 2, midY = (p1.y + p2.y) / 2;
+      var worldX = (pinchAnchor.startMidX - wrapRect.left - pinchAnchor.startPanX) / pinchAnchor.startZoom;
+      var worldY = (pinchAnchor.startMidY - wrapRect.top - pinchAnchor.startPanY) / pinchAnchor.startZoom;
+      current.viewZoom = newZoom;
+      current.panX = (midX - wrapRect.left) - worldX * newZoom;
+      current.panY = (midY - wrapRect.top) - worldY * newZoom;
+      applyBoardTransform();
+    }
+  }
+
+  playBoardWrap.addEventListener("pointerdown", function (e) {
+    if (!current) return;
+    if (e.target.closest(".puzzle-piece:not(.placed)")) return;
+    boardPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    try { playBoardWrap.setPointerCapture(e.pointerId); } catch (err) {}
+    startBoardGesture();
+  });
+  playBoardWrap.addEventListener("pointermove", function (e) {
+    if (!boardPointers.has(e.pointerId)) return;
+    boardPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    moveBoardGesture();
+  });
+  function endBoardPointer(e) {
+    if (!boardPointers.has(e.pointerId)) return;
+    boardPointers.delete(e.pointerId);
+    try { playBoardWrap.releasePointerCapture(e.pointerId); } catch (err) {}
+    startBoardGesture();
+  }
+  playBoardWrap.addEventListener("pointerup", endBoardPointer);
+  playBoardWrap.addEventListener("pointercancel", endBoardPointer);
+
+  function zoomBy(factor) {
+    if (!current) return;
+    var wrapRect = playBoardWrap.getBoundingClientRect();
+    var cx = wrapRect.width / 2, cy = wrapRect.height / 2;
+    var worldX = (cx - current.panX) / current.viewZoom;
+    var worldY = (cy - current.panY) / current.viewZoom;
+    var newZoom = clampZoom(current.viewZoom * factor);
+    current.panX = cx - worldX * newZoom;
+    current.panY = cy - worldY * newZoom;
+    current.viewZoom = newZoom;
+    applyBoardTransform();
+  }
+
+  zoomInBtn.addEventListener("click", function () { zoomBy(1.35); });
+  zoomOutBtn.addEventListener("click", function () { zoomBy(1 / 1.35); });
+  zoomResetBtn.addEventListener("click", function () { if (current) renderPlay(true); });
+
   playBack.addEventListener("click", function () {
     window.removeEventListener("resize", onResizeDebounced);
     if (current && current.dragLayer) { current.dragLayer.remove(); current.dragLayer = null; }
+    boardPointers.clear(); boardMode = null;
     current = null;
     showHome();
   });
@@ -531,7 +651,7 @@
     shuffleArray(unplaced);
     var placed = rec.pieceOrder.filter(function (id) { return rec.placedIds.indexOf(id) !== -1; });
     rec.pieceOrder = placed.concat(unplaced);
-    PuzzleDB.put(rec).then(renderPlay);
+    PuzzleDB.put(rec).then(function () { renderPlay(false); });
   });
 
   menuDeleteBtn.addEventListener("click", function () {

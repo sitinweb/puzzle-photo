@@ -55,10 +55,10 @@
 
   <label class="field-label">Nombre de pièces</label>
   <div class="range-value-row">
-    <span id="pieces-value" class="range-value">48</span>
+    <span id="pieces-value" class="range-value">500</span>
     <span id="grid-hint" class="grid-hint"></span>
   </div>
-  <input type="range" id="pieces-range" min="12" max="200" step="4" value="48">
+  <input type="range" id="pieces-range" min="400" max="2000" step="50" value="500">
 
   <label class="field-label">Difficulté (forme des pièces)</label>
   <div class="segmented" id="difficulty-segmented">
@@ -92,8 +92,15 @@
     <button id="menu-delete" class="menu-item danger" type="button">Supprimer ce puzzle</button>
   </div>
 
-  <div class="play-board-wrap">
-    <div id="play-board" class="play-board"></div>
+  <div id="play-board-wrap" class="play-board-wrap">
+    <div id="board-world">
+      <div id="play-board" class="play-board"></div>
+    </div>
+    <div class="zoom-controls">
+      <button id="zoom-in" class="icon-btn" type="button" aria-label="Zoomer">+</button>
+      <button id="zoom-out" class="icon-btn" type="button" aria-label="Dézoomer">&#8722;</button>
+      <button id="zoom-reset" class="icon-btn" type="button" aria-label="Vue d'ensemble">&#10021;</button>
+    </div>
   </div>
   <div class="play-tray-wrap">
     <div id="play-tray" class="play-tray"></div>
