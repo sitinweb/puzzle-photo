@@ -40,6 +40,7 @@
   var boardWorld = document.getElementById("board-world");
   var playBoard = document.getElementById("play-board");
   var playTray = document.getElementById("play-tray");
+  var playTrayWrap = document.querySelector(".play-tray-wrap");
   var zoomInBtn = document.getElementById("zoom-in");
   var zoomOutBtn = document.getElementById("zoom-out");
   var zoomResetBtn = document.getElementById("zoom-reset");
@@ -245,6 +246,7 @@
       createdAt: Date.now(),
       pieceOrder: ids,
       placedIds: [],
+      loosePositions: {},
       pieceRotations: initialRotations,
       solved: false
     };
@@ -280,6 +282,7 @@
 
   function setupPlay(record) {
     if (current && current.photoUrl) URL.revokeObjectURL(current.photoUrl);
+    record.loosePositions = record.loosePositions || {};
     var photoUrl = URL.createObjectURL(record.photoBlob);
 
     current = {
@@ -355,23 +358,30 @@
     rec.placedIds.forEach(function (id) { placedSet[id] = true; });
     playProgress.textContent = rec.placedIds.length + "/" + rec.pieceCount;
 
-    var pieces = geo.pieces;
+    // Render in pieceOrder (which "Remélanger" shuffles) rather than the
+    // natural row/col grid order, so the tray is actually shuffled.
+    var orderedIds = (rec.pieceOrder && rec.pieceOrder.length === geo.pieces.length)
+      ? rec.pieceOrder
+      : geo.pieces.map(function (p) { return p.id; });
     var idx = 0;
-    showLoading(true, "0 / " + pieces.length + " pièces");
+    showLoading(true, "0 / " + orderedIds.length + " pièces");
 
     function buildBatch() {
-      var end = Math.min(idx + BUILD_BATCH_SIZE, pieces.length);
+      var end = Math.min(idx + BUILD_BATCH_SIZE, orderedIds.length);
       for (; idx < end; idx++) {
-        var piece = pieces[idx];
+        var piece = current.piecesById[orderedIds[idx]];
         var el = buildPieceEl(piece);
+        var loosePos = rec.loosePositions[piece.id];
         if (placedSet[piece.id]) {
           placePieceElOnBoard(el, piece);
+        } else if (loosePos) {
+          placeLooseOnBoard(el, loosePos);
         } else {
           playTray.appendChild(el);
         }
       }
-      if (idx < pieces.length) {
-        loadingProgress.textContent = idx + " / " + pieces.length + " pièces";
+      if (idx < orderedIds.length) {
+        loadingProgress.textContent = idx + " / " + orderedIds.length + " pièces";
         requestAnimationFrame(buildBatch);
       } else {
         showLoading(false);
@@ -425,6 +435,17 @@
     el.classList.remove("dragging");
   }
 
+  // A piece sitting anywhere on the board that ISN'T (yet) at its correct
+  // spot — like scattering pieces on a real table. Still draggable.
+  function placeLooseOnBoard(el, pos) {
+    playBoard.appendChild(el);
+    el.style.position = "absolute";
+    el.style.left = pos.x + "px";
+    el.style.top = pos.y + "px";
+    el.style.margin = "0";
+    el.classList.remove("dragging");
+  }
+
   function ensureDragLayer() {
     if (current.dragLayer) return current.dragLayer;
     var layer = document.createElement("div");
@@ -453,7 +474,17 @@
     el.classList.add("dragging");
   }
 
-  function finishPieceDrag(el, piece, moved, originalParent, originalNext) {
+  function resetFloatStyles(el) {
+    el.style.position = "";
+    el.style.left = "";
+    el.style.top = "";
+    el.style.width = "";
+    el.style.height = "";
+    el.style.margin = "6px";
+    el.style.pointerEvents = "";
+  }
+
+  function finishPieceDrag(el, piece, moved) {
     if (!moved) {
       if (current.record.rotationEnabled) rotatePiece(piece, el);
       return;
@@ -462,6 +493,9 @@
     el.classList.remove("dragging");
     var wrapRect = playBoardWrap.getBoundingClientRect();
     var pieceRect = el.getBoundingClientRect();
+    var pieceCenterX = pieceRect.left + pieceRect.width / 2;
+    var pieceCenterY = pieceRect.top + pieceRect.height / 2;
+
     var impliedX = (pieceRect.left - wrapRect.left - current.panX) / current.viewZoom;
     var impliedY = (pieceRect.top - wrapRect.top - current.panY) / current.viewZoom;
     var scale = current.pieceDisplayScale;
@@ -482,23 +516,28 @@
         current.record.placedIds.push(piece.id);
       }
       delete current.record.pieceRotations[piece.id];
+      delete current.record.loosePositions[piece.id];
       PuzzleDB.put(current.record);
       playProgress.textContent = current.record.placedIds.length + "/" + current.record.pieceCount;
       checkWin();
-    } else {
-      el.style.position = "";
-      el.style.left = "";
-      el.style.top = "";
-      el.style.width = "";
-      el.style.height = "";
-      el.style.margin = "6px";
-      el.style.pointerEvents = "";
-      if (originalNext && originalNext.parentNode === originalParent) {
-        originalParent.insertBefore(el, originalNext);
-      } else {
-        originalParent.appendChild(el);
-      }
+      return;
     }
+
+    var trayRect = playTrayWrap.getBoundingClientRect();
+    var droppedOnTray = pieceCenterY >= trayRect.top;
+
+    if (droppedOnTray) {
+      delete current.record.loosePositions[piece.id];
+      resetFloatStyles(el);
+      playTray.appendChild(el);
+    } else {
+      // Left anywhere else on the board — like scattering a piece on the
+      // table while you figure out where it goes. Stays draggable.
+      current.record.loosePositions[piece.id] = { x: impliedX, y: impliedY };
+      resetFloatStyles(el);
+      placeLooseOnBoard(el, current.record.loosePositions[piece.id]);
+    }
+    PuzzleDB.put(current.record);
   }
 
   function attachPieceDrag(el, piece) {
@@ -512,7 +551,6 @@
   function attachPieceDragTouch(el, piece) {
     var moved = false;
     var startX, startY, originLeft, originTop;
-    var originalParent, originalNext;
     var activeId = null;
 
     function findTouch(list) {
@@ -543,7 +581,7 @@
       document.removeEventListener("touchend", onEnd);
       document.removeEventListener("touchcancel", onEnd);
       activeId = null;
-      finishPieceDrag(el, piece, moved, originalParent, originalNext);
+      finishPieceDrag(el, piece, moved);
     }
 
     el.addEventListener("touchstart", function (e) {
@@ -556,8 +594,6 @@
       startX = t.clientX; startY = t.clientY;
       var rect = el.getBoundingClientRect();
       originLeft = rect.left; originTop = rect.top;
-      originalParent = el.parentNode;
-      originalNext = el.nextSibling;
       document.addEventListener("touchmove", onMove, { passive: false });
       document.addEventListener("touchend", onEnd);
       document.addEventListener("touchcancel", onEnd);
@@ -571,7 +607,6 @@
   function attachPieceDragPointer(el, piece) {
     var moved = false;
     var startX, startY, originLeft, originTop;
-    var originalParent, originalNext;
     var activePointerId = null;
 
     function onMove(e) {
@@ -594,7 +629,7 @@
       document.removeEventListener("pointerup", onUp);
       document.removeEventListener("pointercancel", onUp);
       activePointerId = null;
-      finishPieceDrag(el, piece, moved, originalParent, originalNext);
+      finishPieceDrag(el, piece, moved);
     }
 
     el.addEventListener("pointerdown", function (e) {
@@ -607,8 +642,6 @@
       startX = e.clientX; startY = e.clientY;
       var rect = el.getBoundingClientRect();
       originLeft = rect.left; originTop = rect.top;
-      originalParent = el.parentNode;
-      originalNext = el.nextSibling;
       document.addEventListener("pointermove", onMove);
       document.addEventListener("pointerup", onUp);
       document.addEventListener("pointercancel", onUp);
@@ -764,10 +797,11 @@
   menuShuffleBtn.addEventListener("click", function () {
     playMenu.hidden = true;
     var rec = current.record;
-    var unplaced = rec.pieceOrder.filter(function (id) { return rec.placedIds.indexOf(id) === -1; });
-    shuffleArray(unplaced);
-    var placed = rec.pieceOrder.filter(function (id) { return rec.placedIds.indexOf(id) !== -1; });
-    rec.pieceOrder = placed.concat(unplaced);
+    var isSettled = function (id) { return rec.placedIds.indexOf(id) !== -1 || !!rec.loosePositions[id]; };
+    var unsettled = rec.pieceOrder.filter(function (id) { return !isSettled(id); });
+    shuffleArray(unsettled);
+    var settled = rec.pieceOrder.filter(isSettled);
+    rec.pieceOrder = settled.concat(unsettled);
     PuzzleDB.put(rec).then(function () { renderPlay(false); });
   });
 
